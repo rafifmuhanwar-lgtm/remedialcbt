@@ -42,7 +42,7 @@ export default function KerjakanUjianPage() {
     if (attempt?.id) {
       updateDoc(doc(db, "studentAttempts", attempt.id), {
         violationCount: newCount,
-        status: newCount >= (exam?.maxViolations || 3) ? "blocked" : "locked",
+        status: newCount >= (exam?.maxViolations || 1) ? "blocked" : "locked",
         lockedAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
@@ -266,7 +266,7 @@ export default function KerjakanUjianPage() {
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col select-none" onCopy={e => e.preventDefault()} onPaste={e => e.preventDefault()} onCut={e => e.preventDefault()}>
       {/* Lock Screen */}
-      {isLocked && <LockScreen reason={lockReason} maxViolations={exam?.maxViolations || 3} violationCount={violationCount} onUnlock={handleUnlock} onBlocked={handleBlocked} examPin={exam?.examPin} />}
+      {isLocked && <LockScreen reason={lockReason} maxViolations={exam?.maxViolations || 1} violationCount={violationCount} onUnlock={handleUnlock} onBlocked={handleBlocked} examPin={exam?.examPin} />}
 
       {/* Header */}
       <header className="bg-white border-b border-gray-200 sticky top-0 z-30 px-4 py-3">
@@ -279,7 +279,7 @@ export default function KerjakanUjianPage() {
             <Clock className="w-4 h-4 mr-1.5" />{formatTime(timeLeft)}
           </div>
           <div className="flex items-center space-x-2">
-            {violationCount > 0 && <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded-full">⚠ {violationCount}/{exam?.maxViolations || 3}</span>}
+            {violationCount > 0 && <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded-full">⚠ {violationCount}/{exam?.maxViolations || 1}</span>}
             {autoSaveStatus && <span className="text-xs text-green-600 hidden sm:inline">{autoSaveStatus}</span>}
           </div>
         </div>

@@ -57,7 +57,7 @@ export default function LoginPage() {
           </Link>
         </div>
         <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
-          Login Guru
+          Login Pengawas
         </h2>
         <p className="mt-2 text-center text-sm text-gray-600">
           Masuk ke dashboard RemedialCBT

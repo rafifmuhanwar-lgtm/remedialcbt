@@ -145,7 +145,7 @@ export default function HasilUjianPage() {
           </div>
 
           <div className="bg-gray-50 rounded-lg p-4 text-center text-sm text-gray-500 border border-gray-100">
-            Ujian telah Selesai Silahkan Hubungi Guru untuk Informasi Lebih Lanjut.
+            Ujian telah Selesai Silahkan Hubungi Pengawas untuk Informasi Lebih Lanjut.
           </div>
         </div>
       </div>

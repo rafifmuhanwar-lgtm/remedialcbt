@@ -32,7 +32,7 @@ export default function CreateExamPage() {
     minimumScore: 75,
     status: "active",
     maxAttempts: 1,
-    maxViolations: 3,
+    maxViolations: 1,
     examPin: Math.floor(100000 + Math.random() * 900000).toString(), // 6 digit PIN
     examCode: generateCode(),
     examLinkSlug: generateSlug(),

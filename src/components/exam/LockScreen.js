@@ -10,7 +10,7 @@ export function LockScreen({ reason, maxViolations, violationCount, onUnlock, on
     if (pin === examPin) {
       onUnlock();
     } else {
-      setError("PIN salah. Silakan minta PIN yang benar dari guru Anda.");
+      setError("PIN salah. Silakan minta PIN yang benar dari pengawas Anda.");
     }
   };
 
