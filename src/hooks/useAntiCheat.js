@@ -1,15 +1,17 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { doc, updateDoc, serverTimestamp, collection, addDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
 export function useAntiCheat(exam, attempt, isLocked, onLock) {
   const [wakeLock, setWakeLock] = useState(null);
-  const violationTimer = useRef(null);
-  const lastResizeTime = useRef(0);
-  const initialScreenSize = useRef(null);
-  const touchTracker = useRef({ overlayDetected: false });
+  const resizeTimer = useRef(null);
+  const blurRecorded = useRef(false);
+  const isLockedRef = useRef(isLocked);
 
-  const logActivity = async (type, desc) => {
+  // Keep ref in sync with state
+  useEffect(() => { isLockedRef.current = isLocked; }, [isLocked]);
+
+  const logActivity = useCallback(async (type, desc) => {
     if (!attempt?.id || !exam?.id) return;
     try {
       await addDoc(collection(db, "examActivityLogs"), {
@@ -22,30 +24,20 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
     } catch (e) {
       console.error("Log error", e);
     }
-  };
+  }, [attempt?.id, exam?.id]);
 
-  const handleViolation = async (reason, type) => {
-    if (isLocked) return; // Already locked
-    if (violationTimer.current) clearTimeout(violationTimer.current);
-
+  const handleViolation = useCallback(async (reason, type) => {
+    if (isLockedRef.current) return;
     await logActivity(type, reason);
     onLock(reason);
-  };
+  }, [logActivity, onLock]);
 
   useEffect(() => {
     if (!exam || !attempt || isLocked || !exam.antiCheatEnabled) return;
 
-    // Store initial screen dimensions for comparison
-    if (!initialScreenSize.current) {
-      initialScreenSize.current = {
-        width: window.screen.width,
-        height: window.screen.height,
-        innerWidth: window.innerWidth,
-        innerHeight: window.innerHeight
-      };
-    }
-
-    // 1. Wake Lock (Anti Sleep)
+    // ================================================================
+    // 1. WAKE LOCK (Anti Sleep)
+    // ================================================================
     const requestWakeLock = async () => {
       if (exam.antiSleepEnabled && 'wakeLock' in navigator) {
         try {
@@ -60,30 +52,106 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
     };
     requestWakeLock();
 
-    // 2. Tab Switch / Hidden
+    // ================================================================
+    // 2. CONTENT BLANKING — Proteksi screenshot mobile & desktop
+    //    Saat layar hidden atau blur, konten langsung di-blank
+    //    Jadi screenshot/screen record hanya dapat layar kosong
+    // ================================================================
+    const blankOverlay = document.createElement('div');
+    blankOverlay.id = 'anti-screenshot-overlay';
+    blankOverlay.style.cssText = `
+      position: fixed; inset: 0; z-index: 99999;
+      background: #1a1a2e;
+      display: none;
+      align-items: center; justify-content: center;
+      color: #e74c3c; font-size: 18px; font-weight: bold;
+      font-family: system-ui, sans-serif;
+      text-align: center; padding: 20px;
+    `;
+    blankOverlay.innerHTML = `
+      <div>
+        <div style="font-size:48px;margin-bottom:16px">🚫</div>
+        <div>PELANGGARAN TERDETEKSI</div>
+        <div style="font-size:13px;color:#999;margin-top:8px">Screenshot / Aktivitas mencurigakan terdeteksi</div>
+      </div>
+    `;
+    document.body.appendChild(blankOverlay);
+
+    const showBlank = () => { blankOverlay.style.display = 'flex'; };
+    const hideBlank = () => { blankOverlay.style.display = 'none'; };
+
+    // ================================================================
+    // 3. VISIBILITY CHANGE — Tab switch / app switch / screenshot
+    //    Screenshot di Android/iOS menyebabkan visibilitychange brief
+    // ================================================================
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        handleViolation("Terdeteksi pindah tab atau aplikasi disembunyikan.", "page_hidden");
+        showBlank(); // Blank konten SEGERA supaya screenshot dapat layar kosong
+        handleViolation(
+          "Terdeteksi pindah tab, aplikasi disembunyikan, atau percobaan screenshot.",
+          "page_hidden"
+        );
       } else {
-        requestWakeLock(); // Re-request when back
+        hideBlank();
+        requestWakeLock();
       }
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
-    // 3. Browser Blur (hilang fokus) — juga mendeteksi floating app overlay
+    // ================================================================
+    // 4. BLUR — Deteksi floating app / bola mengambang / app lain
+    //    BUG FIX: Sebelumnya timer di-cancel oleh focus, jadi floating
+    //    app yang cepat return focus tidak terdeteksi.
+    //    SEKARANG: Blur langsung = VIOLATION, tidak bisa di-cancel.
+    //    Toleransi hanya untuk input keyboard (300ms).
+    // ================================================================
     const handleBlur = () => {
-      // Blur can be triggered by keyboard or alert, need small delay
-      violationTimer.current = setTimeout(() => {
-        handleViolation("Browser kehilangan fokus. Terdeteksi membuka aplikasi lain atau floating app (bola mengambang).", "browser_blur");
-      }, 1500); // Reduced to 1.5 sec — floating apps trigger blur quickly
+      if (isLockedRef.current) return;
+
+      // Cek apakah blur karena keyboard muncul (input/textarea aktif)
+      const activeEl = document.activeElement;
+      const isInputFocused = activeEl && (
+        activeEl.tagName === 'INPUT' || 
+        activeEl.tagName === 'TEXTAREA' || 
+        activeEl.tagName === 'SELECT'
+      );
+
+      if (isInputFocused) {
+        // Keyboard muncul — beri toleransi 500ms, tapi TETAP cek
+        // Gunakan timer TERPISAH dari resize timer
+        blurRecorded.current = false;
+        setTimeout(() => {
+          if (!document.hasFocus() && !isLockedRef.current && !blurRecorded.current) {
+            blurRecorded.current = true;
+            showBlank();
+            handleViolation(
+              "Browser kehilangan fokus. Terdeteksi membuka aplikasi lain atau floating app (bola mengambang).",
+              "browser_blur"
+            );
+          }
+        }, 500);
+      } else {
+        // Bukan input — LANGSUNG violation, tidak ada toleransi
+        // Ini akan menangkap floating ball app seperti QuestionAI
+        blurRecorded.current = true;
+        showBlank();
+        handleViolation(
+          "Browser kehilangan fokus. Terdeteksi membuka aplikasi lain atau floating app (bola mengambang).",
+          "browser_blur"
+        );
+      }
     };
     const handleFocus = () => {
-      if (violationTimer.current) clearTimeout(violationTimer.current);
+      hideBlank();
+      blurRecorded.current = false;
+      // TIDAK cancel violation — violation sudah tercatat
     };
     window.addEventListener("blur", handleBlur);
     window.addEventListener("focus", handleFocus);
 
-    // 4. Fullscreen
+    // ================================================================
+    // 5. FULLSCREEN EXIT
+    // ================================================================
     const handleFullscreenChange = () => {
       if (!document.fullscreenElement) {
         handleViolation("Terdeteksi keluar dari layar penuh (Fullscreen).", "fullscreen_exited");
@@ -91,92 +159,81 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
     };
     document.addEventListener("fullscreenchange", handleFullscreenChange);
 
-    // 5. Resize (Split Screen / Floating Window / Floating Ball App)
+    // ================================================================
+    // 6. RESIZE — Split screen / floating window
+    //    Timer TERPISAH dari blur (fix bug timer conflict)
+    // ================================================================
     const handleResize = () => {
       const currentWidth = window.innerWidth;
       const currentHeight = window.innerHeight;
       const screenWidth = window.screen.width;
       const screenHeight = window.screen.height;
-
       const widthRatio = currentWidth / screenWidth;
       const heightRatio = currentHeight / screenHeight;
 
       if (exam.splitScreenDetectionEnabled || exam.floatingWindowDetectionEnabled) {
-        // Toleransi resize (keyboard, orientasi, address bar)
         if (widthRatio < 0.8 || heightRatio < 0.6) {
-          if (violationTimer.current) clearTimeout(violationTimer.current);
-          violationTimer.current = setTimeout(() => {
-             handleViolation("Terdeteksi penggunaan Split Screen, Pop-up View, atau ukuran layar tidak normal.", "resize_violation");
-          }, 3000); // 3 sec tolerance to check if it persists
+          if (resizeTimer.current) clearTimeout(resizeTimer.current);
+          resizeTimer.current = setTimeout(() => {
+            handleViolation(
+              "Terdeteksi penggunaan Split Screen, Pop-up View, atau ukuran layar tidak normal.",
+              "resize_violation"
+            );
+          }, 2000);
         } else {
-          if (violationTimer.current) clearTimeout(violationTimer.current);
+          if (resizeTimer.current) clearTimeout(resizeTimer.current);
         }
       }
     };
     window.addEventListener("resize", handleResize);
 
-    // 6. Disable Copy Paste & Shortcuts
+    // ================================================================
+    // 7. KEYBOARD SHORTCUT BLOCKING + SCREENSHOT KEY DETECTION
+    // ================================================================
     const handleContextMenu = (e) => e.preventDefault();
     const handleKeyDown = (e) => {
       // Block copy/paste/print shortcuts
       if (
-        (e.ctrlKey || e.metaKey) && 
-        (e.key === 'c' || e.key === 'v' || e.key === 'x' || e.key === 'u' || e.key === 's' || e.key === 'p')
+        (e.ctrlKey || e.metaKey) &&
+        ['c', 'v', 'x', 'u', 's', 'p', 'a'].includes(e.key.toLowerCase())
       ) {
         e.preventDefault();
         logActivity("shortcut_blocked", `Pencegahan shortcut ${e.key}`);
       }
 
-      // 7. Screenshot Detection — PrintScreen key (Desktop)
+      // PrintScreen key (Desktop)
       if (e.key === 'PrintScreen' || e.key === 'Snapshot') {
         e.preventDefault();
-        handleViolation("Terdeteksi percobaan mengambil screenshot (PrintScreen).", "screenshot_attempt");
+        showBlank();
+        handleViolation("Terdeteksi percobaan mengambil screenshot (PrintScreen).", "screenshot_printscreen");
       }
 
-      // Detect Snipping Tool / Windows shortcut (Win+Shift+S)
-      if ((e.metaKey || e.key === 'Meta') && e.shiftKey && e.key === 'S') {
+      // Snipping Tool — Win+Shift+S
+      if (e.shiftKey && (e.metaKey || e.key === 'Meta') && e.key.toLowerCase() === 's') {
         e.preventDefault();
+        showBlank();
         handleViolation("Terdeteksi percobaan mengambil screenshot (Snipping Tool).", "screenshot_snipping");
       }
 
-      // Detect Mac screenshot shortcuts (Cmd+Shift+3, Cmd+Shift+4, Cmd+Shift+5)
+      // Mac screenshot — Cmd+Shift+3/4/5
       if (e.metaKey && e.shiftKey && ['3', '4', '5'].includes(e.key)) {
         e.preventDefault();
-        handleViolation("Terdeteksi percobaan mengambil screenshot (Mac Screenshot).", "screenshot_mac");
+        showBlank();
+        handleViolation("Terdeteksi percobaan mengambil screenshot (Mac).", "screenshot_mac");
+      }
+
+      // F12 / Ctrl+Shift+I — DevTools
+      if (e.key === 'F12' || ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'i')) {
+        e.preventDefault();
+        handleViolation("Terdeteksi percobaan membuka Developer Tools.", "devtools_shortcut");
       }
     };
     document.addEventListener("contextmenu", handleContextMenu);
     document.addEventListener("keydown", handleKeyDown);
 
-    // 8. Screenshot Detection — CSS-based screen capture blocking
-    // Apply CSS to prevent screen recording/screenshot on supported browsers
-    const applyScreenshotProtection = () => {
-      const style = document.createElement('style');
-      style.id = 'anti-screenshot-style';
-      style.textContent = `
-        /* Prevent screen capture on some mobile browsers */
-        @media screen {
-          .exam-protected-content {
-            -webkit-user-select: none !important;
-            user-select: none !important;
-          }
-        }
-        /* DRM-like protection for supporting browsers */
-        @media (display-mode: fullscreen) {
-          body {
-            -webkit-user-select: none !important;
-            user-select: none !important;
-          }
-        }
-      `;
-      if (!document.getElementById('anti-screenshot-style')) {
-        document.head.appendChild(style);
-      }
-    };
-    applyScreenshotProtection();
-
-    // 9. Screenshot Detection — Using navigator.clipboard & Permissions API
-    // Monitor clipboard for screenshot paste attempts
+    // ================================================================
+    // 8. PASTE IMAGE DETECTION — Screenshot paste
+    // ================================================================
     const handlePaste = (e) => {
       const items = e.clipboardData?.items;
       if (items) {
@@ -191,94 +248,106 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
     };
     document.addEventListener("paste", handlePaste);
 
-    // 10. Screenshot Detection — Screen Capture API monitoring
-    // Detect if screen is being recorded/captured
-    const monitorScreenCapture = async () => {
-      try {
-        if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-          // Intercept getDisplayMedia calls
-          const originalGetDisplayMedia = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
-          navigator.mediaDevices.getDisplayMedia = async function(...args) {
-            handleViolation("Terdeteksi percobaan screen recording/capture.", "screen_capture_attempt");
-            throw new DOMException('Screen capture blocked by exam security', 'NotAllowedError');
-          };
-        }
-      } catch (e) {
-        // Silent — not all browsers support this
+    // ================================================================
+    // 9. AGGRESSIVE FOCUS POLLING — Deteksi floating app overlay
+    //    Floating apps (QuestionAI ball) bisa aktif TANPA menyebabkan
+    //    blur event. Polling hasFocus() setiap 1 detik.
+    // ================================================================
+    const focusPollInterval = setInterval(() => {
+      if (isLockedRef.current) return;
+      
+      // Jika browser tidak punya fokus DAN halaman tidak hidden
+      // = ada sesuatu di atas browser (floating app / overlay)
+      if (!document.hasFocus() && !document.hidden) {
+        showBlank();
+        handleViolation(
+          "Terdeteksi aplikasi mengambang (floating app/bola AI) aktif di atas layar ujian. Tutup semua aplikasi overlay!",
+          "floating_app_detected"
+        );
       }
-    };
-    monitorScreenCapture();
+    }, 1000); // Setiap 1 detik
 
-    // 11. Floating App / Overlay Detection (QuestionAI ball, etc.)
-    // Floating apps create an overlay that intercepts touch events outside the browser viewport
-    const detectFloatingOverlay = () => {
-      // Method A: Monitor for suspicious touch events that indicate overlay
-      let suspiciousTouchCount = 0;
-      const touchStartHandler = (e) => {
-        // If touch starts at edges (common for floating ball apps)
-        const touch = e.touches[0];
-        if (touch) {
-          const screenW = window.screen.width;
-          const screenH = window.screen.height;
-          // Floating balls are typically at screen edges
-          const isEdgeTouch = (
-            touch.clientX < 20 || touch.clientX > screenW - 20 ||
-            touch.clientY < 20 || touch.clientY > screenH - 20
-          );
-          // Not necessarily a violation for edge touch alone
-        }
-      };
-      document.addEventListener("touchstart", touchStartHandler, { passive: true });
-
-      // Method B: Monitor window.outerWidth/Height changes (floating app resizes viewport)
-      const overlayCheckInterval = setInterval(() => {
-        if (isLocked) return;
-        
-        const outerW = window.outerWidth;
-        const outerH = window.outerHeight;
-        const innerW = window.innerWidth;
-        const innerH = window.innerHeight;
-        
-        // On mobile, if there's a significant gap between outer and inner,
-        // it might indicate a floating overlay app
-        const widthGap = Math.abs(outerW - innerW);
-        const heightGap = Math.abs(outerH - innerH);
-        
-        // Check if browser has lost focus silently (floating apps can do this)
-        if (!document.hasFocus() && !document.hidden && !isLocked) {
-          handleViolation(
-            "Terdeteksi aplikasi mengambang (floating app/bola AI) aktif di atas layar ujian. Segera tutup aplikasi tersebut.",
-            "floating_app_detected"
-          );
-        }
-      }, 2000); // Check every 2 seconds
-
-      // Method C: Detect picture-in-picture or multi-window
-      if ('documentPictureInPicture' in window || 'pictureInPictureEnabled' in document) {
-        document.addEventListener('enterpictureinpicture', () => {
-          handleViolation("Terdeteksi penggunaan Picture-in-Picture mode.", "pip_detected");
-        });
+    // ================================================================
+    // 10. SCREEN CAPTURE API — Intercept recording
+    // ================================================================
+    let originalGetDisplayMedia = null;
+    try {
+      if (navigator.mediaDevices?.getDisplayMedia) {
+        originalGetDisplayMedia = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
+        navigator.mediaDevices.getDisplayMedia = async function (...args) {
+          handleViolation("Terdeteksi percobaan screen recording.", "screen_capture_attempt");
+          throw new DOMException('Blocked by exam security', 'NotAllowedError');
+        };
       }
+    } catch (e) { /* silent */ }
 
-      return { touchStartHandler, overlayCheckInterval };
+    // ================================================================
+    // 11. DEVTOOLS DETECTION — Monitor window size gap
+    // ================================================================
+    const devtoolsInterval = setInterval(() => {
+      if (isLockedRef.current) return;
+      const widthDiff = window.outerWidth - window.innerWidth;
+      const heightDiff = window.outerHeight - window.innerHeight;
+      if (widthDiff > 160 || heightDiff > 160) {
+        handleViolation("Terdeteksi Developer Tools terbuka.", "devtools_detected");
+      }
+    }, 3000);
+
+    // ================================================================
+    // 12. CSS PROTECTION — Anti user-select + anti screenshot hints
+    // ================================================================
+    const style = document.createElement('style');
+    style.id = 'anti-cheat-style';
+    style.textContent = `
+      body, body * {
+        -webkit-user-select: none !important;
+        user-select: none !important;
+        -webkit-touch-callout: none !important;
+      }
+      input, textarea, select {
+        -webkit-user-select: text !important;
+        user-select: text !important;
+      }
+      /* Cegah drag */
+      img, a { 
+        -webkit-user-drag: none !important;
+        user-drag: none !important;
+      }
+    `;
+    if (!document.getElementById('anti-cheat-style')) {
+      document.head.appendChild(style);
+    }
+
+    // ================================================================
+    // 13. TOUCH MONITOR — Deteksi multi-touch & overlay patterns
+    //     Floating ball apps kadang inject touch events
+    // ================================================================
+    let lastTouchTime = 0;
+    const handleTouchStart = (e) => {
+      const now = Date.now();
+      // Deteksi multi-touch yang mencurigakan (>2 jari = mungkin gesture)
+      if (e.touches.length > 2) {
+        handleViolation(
+          "Terdeteksi gesture multi-touch mencurigakan.",
+          "suspicious_multitouch"
+        );
+      }
+      lastTouchTime = now;
     };
-    const floatingDetection = detectFloatingOverlay();
+    document.addEventListener("touchstart", handleTouchStart, { passive: true });
 
-    // 12. DevTools Detection (prevents using browser inspect to cheat)
-    const detectDevTools = () => {
-      const threshold = 160;
-      const devtoolsCheck = setInterval(() => {
-        if (isLocked) return;
-        const widthDiff = window.outerWidth - window.innerWidth;
-        const heightDiff = window.outerHeight - window.innerHeight;
-        if (widthDiff > threshold || heightDiff > threshold) {
-          handleViolation("Terdeteksi Developer Tools terbuka.", "devtools_detected");
-        }
-      }, 3000);
-      return devtoolsCheck;
+    // ================================================================
+    // 14. WINDOW OPEN INTERCEPT — Block popup/new window
+    // ================================================================
+    const originalWindowOpen = window.open;
+    window.open = function () {
+      handleViolation("Terdeteksi percobaan membuka window baru.", "window_open_blocked");
+      return null;
     };
-    const devtoolsInterval = detectDevTools();
 
+    // ================================================================
+    // CLEANUP
+    // ================================================================
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("blur", handleBlur);
@@ -288,22 +357,29 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
       document.removeEventListener("contextmenu", handleContextMenu);
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("paste", handlePaste);
-      if (violationTimer.current) clearTimeout(violationTimer.current);
+      document.removeEventListener("touchstart", handleTouchStart);
+      
+      if (resizeTimer.current) clearTimeout(resizeTimer.current);
+      clearInterval(focusPollInterval);
+      clearInterval(devtoolsInterval);
+      
       if (wakeLock !== null && wakeLock.release) {
         wakeLock.release().then(() => logActivity('wake_lock_released', 'Wake Lock dilepas'));
       }
-      // Cleanup floating detection
-      if (floatingDetection.overlayCheckInterval) clearInterval(floatingDetection.overlayCheckInterval);
-      if (floatingDetection.touchStartHandler) {
-        document.removeEventListener("touchstart", floatingDetection.touchStartHandler);
+      
+      // Restore intercepted APIs
+      if (originalGetDisplayMedia && navigator.mediaDevices) {
+        navigator.mediaDevices.getDisplayMedia = originalGetDisplayMedia;
       }
-      // Cleanup devtools detection
-      if (devtoolsInterval) clearInterval(devtoolsInterval);
-      // Remove anti-screenshot style
-      const style = document.getElementById('anti-screenshot-style');
-      if (style) style.remove();
+      window.open = originalWindowOpen;
+      
+      // Remove injected elements
+      const overlay = document.getElementById('anti-screenshot-overlay');
+      if (overlay) overlay.remove();
+      const styleEl = document.getElementById('anti-cheat-style');
+      if (styleEl) styleEl.remove();
     };
-  }, [exam, attempt, isLocked]);
+  }, [exam, attempt, isLocked, logActivity, handleViolation]);
 
   return { wakeLock };
 }
