@@ -122,18 +122,17 @@ export default function HasilUjianPage() {
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-gray-500">Status Pengerjaan</span>
-              <span className={`font-medium ${
-                attempt.status === "submitted" ? "text-green-600" : 
-                attempt.status === "time_expired" ? "text-yellow-600" : 
-                attempt.status === "blocked" ? "text-red-600" :
-                attempt.status === "locked" ? "text-orange-600" :
-                "text-blue-600"
-              }`}>
-                {attempt.status === "submitted" ? "Selesai" : 
-                 attempt.status === "time_expired" ? "Waktu Habis" : 
-                 attempt.status === "blocked" ? "Diblokir" :
-                 attempt.status === "locked" ? "Terkunci" :
-                 "Sedang Berjalan"}
+              <span className={`font-medium ${attempt.status === "submitted" ? "text-green-600" :
+                  attempt.status === "time_expired" ? "text-yellow-600" :
+                    attempt.status === "blocked" ? "text-red-600" :
+                      attempt.status === "locked" ? "text-orange-600" :
+                        "text-blue-600"
+                }`}>
+                {attempt.status === "submitted" ? "Selesai" :
+                  attempt.status === "time_expired" ? "Waktu Habis" :
+                    attempt.status === "blocked" ? "Diblokir" :
+                      attempt.status === "locked" ? "Terkunci" :
+                        "Sedang Berjalan"}
               </span>
             </div>
             {attempt.violationCount > 0 && (

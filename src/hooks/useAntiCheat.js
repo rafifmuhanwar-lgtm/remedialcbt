@@ -1,6 +1,4 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { doc, updateDoc, serverTimestamp, collection, addDoc } from "firebase/firestore";
-import { db } from "@/lib/firebase";
 
 export function useAntiCheat(exam, attempt, isLocked, onLock) {
   const [wakeLock, setWakeLock] = useState(null);
@@ -11,18 +9,19 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
   // Keep ref in sync with state
   useEffect(() => { isLockedRef.current = isLocked; }, [isLocked]);
 
-  const logActivity = useCallback(async (type, desc) => {
+  const logActivity = useCallback((type, desc) => {
     if (!attempt?.id || !exam?.id) return;
     try {
-      await addDoc(collection(db, "examActivityLogs"), {
-        attemptId: attempt.id,
-        examId: exam.id,
-        activityType: type,
-        description: desc,
-        createdAt: serverTimestamp()
+      const storageKey = `exam_violations_${attempt.id}`;
+      const existing = JSON.parse(localStorage.getItem(storageKey) || "[]");
+      existing.push({
+        type,
+        reason: desc,
+        timestamp: Date.now()
       });
+      localStorage.setItem(storageKey, JSON.stringify(existing));
     } catch (e) {
-      console.error("Log error", e);
+      console.error("Local log error", e);
     }
   }, [attempt?.id, exam?.id]);
 
@@ -111,8 +110,8 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
       // Cek apakah blur karena keyboard muncul (input/textarea aktif)
       const activeEl = document.activeElement;
       const isInputFocused = activeEl && (
-        activeEl.tagName === 'INPUT' || 
-        activeEl.tagName === 'TEXTAREA' || 
+        activeEl.tagName === 'INPUT' ||
+        activeEl.tagName === 'TEXTAREA' ||
         activeEl.tagName === 'SELECT'
       );
 
@@ -255,7 +254,7 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
     // ================================================================
     const focusPollInterval = setInterval(() => {
       if (isLockedRef.current) return;
-      
+
       // Jika browser tidak punya fokus DAN halaman tidak hidden
       // = ada sesuatu di atas browser (floating app / overlay)
       if (!document.hasFocus() && !document.hidden) {
@@ -358,21 +357,21 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("paste", handlePaste);
       document.removeEventListener("touchstart", handleTouchStart);
-      
+
       if (resizeTimer.current) clearTimeout(resizeTimer.current);
       clearInterval(focusPollInterval);
       clearInterval(devtoolsInterval);
-      
+
       if (wakeLock !== null && wakeLock.release) {
         wakeLock.release().then(() => logActivity('wake_lock_released', 'Wake Lock dilepas'));
       }
-      
+
       // Restore intercepted APIs
       if (originalGetDisplayMedia && navigator.mediaDevices) {
         navigator.mediaDevices.getDisplayMedia = originalGetDisplayMedia;
       }
       window.open = originalWindowOpen;
-      
+
       // Remove injected elements
       const overlay = document.getElementById('anti-screenshot-overlay');
       if (overlay) overlay.remove();

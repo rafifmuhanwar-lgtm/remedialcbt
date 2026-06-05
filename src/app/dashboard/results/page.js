@@ -68,7 +68,7 @@ export default function ResultsPage() {
   const unblockAttempt = async (attemptId) => {
     if (confirm("Buka blokir untuk peserta ini? Status akan dikembalikan ke in_progress.")) {
       try {
-        await updateDoc(doc(db, "studentAttempts", attemptId), { 
+        await updateDoc(doc(db, "studentAttempts", attemptId), {
           status: "in_progress",
           violationCount: 0
         });
@@ -106,9 +106,9 @@ export default function ResultsPage() {
       "No Absen": a.studentNumber || "-",
       "Nilai": a.score || 0,
       "Status": a.status === "submitted" ? "Selesai" :
-                a.status === "time_expired" ? "Waktu Habis" :
-                a.status === "blocked" ? "Diblokir" :
-                a.status === "locked" ? "Terkunci" : "Berjalan",
+        a.status === "time_expired" ? "Waktu Habis" :
+          a.status === "blocked" ? "Diblokir" :
+            a.status === "locked" ? "Terkunci" : "Berjalan",
       "Keterangan": (a.score || 0) >= (exam?.minimumScore || 75) ? "LULUS" : "BELUM LULUS",
       "Pelanggaran": a.violationCount || 0,
     }));
@@ -153,7 +153,7 @@ export default function ResultsPage() {
     const exam = getSelectedExam();
     const ws = XLSX.utils.json_to_sheet(data);
     const csv = XLSX.utils.sheet_to_csv(ws);
-    
+
     const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -192,7 +192,7 @@ export default function ResultsPage() {
             Anda belum memiliki ujian.
           </div>
         ) : (
-          <select 
+          <select
             value={selectedExamId}
             onChange={(e) => setSelectedExamId(e.target.value)}
             className="block w-full max-w-md rounded-lg border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border"
@@ -220,7 +220,7 @@ export default function ResultsPage() {
               </button>
             </div>
           </div>
-          
+
           {loading ? (
             <div className="p-12 text-center">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mx-auto"></div>

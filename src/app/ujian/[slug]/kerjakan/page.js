@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { doc, getDoc, collection, query, where, getDocs, updateDoc, addDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, collection, query, where, getDocs, updateDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAntiCheat } from "@/hooks/useAntiCheat";
 import { LockScreen } from "@/components/exam/LockScreen";
@@ -32,20 +32,32 @@ export default function KerjakanUjianPage() {
   const timerRef = useRef(null);
   const isSubmittingRef = useRef(false);
 
+  const answersRef = useRef(answers);
+  useEffect(() => {
+    answersRef.current = answers;
+  }, [answers]);
+
   // Anti-cheat hook
   useAntiCheat(exam, attempt, isLocked, (reason) => {
     if (isBlocked || isSubmittingRef.current) return;
-    const newCount = violationCount + 1;
+    
+    const violationsKey = `exam_violations_${attempt?.id}`;
+    const violations = JSON.parse(localStorage.getItem(violationsKey) || "[]");
+    const newCount = violations.length;
+
     setViolationCount(newCount);
     setLockReason(reason);
     setIsLocked(true);
+
     if (attempt?.id) {
+      const isBlockedNow = newCount >= (exam?.maxViolations || 3);
       updateDoc(doc(db, "studentAttempts", attempt.id), {
         violationCount: newCount,
-        status: newCount >= (exam?.maxViolations || 1) ? "blocked" : "locked",
+        status: isBlockedNow ? "blocked" : "locked",
         lockedAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
+        updatedAt: serverTimestamp(),
+        violations: violations
+      }).catch(err => console.error("Error updating lockout:", err));
     }
   });
 
@@ -75,7 +87,6 @@ export default function KerjakanUjianPage() {
         }
 
         setAttempt(attemptData);
-        setViolationCount(attemptData.violationCount || 0);
 
         // Load exam
         const examSnap = await getDoc(doc(db, "exams", attemptData.examId));
@@ -98,17 +109,70 @@ export default function KerjakanUjianPage() {
         }
         setQuestions(qList);
 
-        // Load existing answers
-        const aSnap = await getDocs(query(collection(db, "studentAnswers"), where("attemptId", "==", attemptData.id)));
+        // Load existing answers (merge Firestore new answers, old studentAnswers, and localStorage cache)
         const existingAnswers = {};
-        aSnap.forEach(d => { const a = d.data(); existingAnswers[a.questionId] = { docId: d.id, answer: a.selectedOptionId || a.essayAnswer || "" }; });
+        
+        // 1. studentAnswers subcollection (migration / backward compatibility)
+        const aSnap = await getDocs(query(collection(db, "studentAnswers"), where("attemptId", "==", attemptData.id)));
+        aSnap.forEach(d => {
+          const a = d.data();
+          existingAnswers[a.questionId] = { answer: a.selectedOptionId || a.essayAnswer || "" };
+        });
+
+        // 2. attempts.answers field (optimized path)
+        if (attemptData.answers) {
+          Object.keys(attemptData.answers).forEach(qId => {
+            existingAnswers[qId] = { answer: attemptData.answers[qId] };
+          });
+        }
+
+        // 3. localStorage cache (offline/reload protection)
+        const answersKey = `exam_answers_${attemptData.id}`;
+        const cachedAnswersVal = localStorage.getItem(answersKey);
+        if (cachedAnswersVal) {
+          try {
+            const cached = JSON.parse(cachedAnswersVal);
+            Object.keys(cached).forEach(qId => {
+              existingAnswers[qId] = { answer: cached[qId] };
+            });
+          } catch (e) {
+            console.error("Local answers parse error", e);
+          }
+        }
         setAnswers(existingAnswers);
 
-        // Calculate remaining time
-        const startedAt = attemptData.startedAt?.toDate ? attemptData.startedAt.toDate() : new Date(attemptData.startedAt);
-        const elapsed = Math.floor((Date.now() - startedAt.getTime()) / 1000);
-        const totalSec = examData.durationMinutes * 60;
-        const remaining = Math.max(0, totalSec - elapsed);
+        // Load and merge violations
+        const violationsKey = `exam_violations_${attemptData.id}`;
+        const cachedViolationsVal = localStorage.getItem(violationsKey);
+        let currentViolations = attemptData.violations || [];
+        if (cachedViolationsVal) {
+          try {
+            const cached = JSON.parse(cachedViolationsVal);
+            const existingTimestamps = new Set(currentViolations.map(v => v.timestamp));
+            cached.forEach(v => {
+              if (!existingTimestamps.has(v.timestamp)) {
+                currentViolations.push(v);
+              }
+            });
+          } catch (e) {
+            console.error("Local violations parse error", e);
+          }
+        }
+        localStorage.setItem(violationsKey, JSON.stringify(currentViolations));
+        setViolationCount(currentViolations.length);
+
+        // Calculate remaining time using localStorage endTime (Rule A)
+        const endTimeKey = `exam_end_time_${examData.id}`;
+        let endTimeVal = localStorage.getItem(endTimeKey);
+        let endTime;
+        if (endTimeVal) {
+          endTime = parseInt(endTimeVal, 10);
+        } else {
+          const startedAt = attemptData.startedAt?.toDate ? attemptData.startedAt.toDate() : new Date(attemptData.startedAt);
+          endTime = startedAt.getTime() + examData.durationMinutes * 60 * 1000;
+          localStorage.setItem(endTimeKey, endTime.toString());
+        }
+        const remaining = Math.max(0, Math.floor((endTime - Date.now()) / 1000));
         setTimeLeft(remaining);
 
         if (remaining <= 0) { await autoSubmit(attemptData.id); return; }
@@ -125,34 +189,50 @@ export default function KerjakanUjianPage() {
     init();
   }, [slug, router]);
 
-  // Timer
+  // Timer Effect
   useEffect(() => {
-    if (timeLeft <= 0 || loading || isBlocked) return;
-    timerRef.current = setInterval(() => {
-      setTimeLeft(prev => {
-        if (prev <= 1) { clearInterval(timerRef.current); autoSubmit(attempt?.id); return 0; }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timerRef.current);
-  }, [loading, isBlocked, timeLeft > 0]);
+    if (loading || isBlocked || !exam?.id) return;
+    const endTimeKey = `exam_end_time_${exam.id}`;
+    const endTimeVal = localStorage.getItem(endTimeKey);
+    if (!endTimeVal) return;
+    const endTime = parseInt(endTimeVal, 10);
 
-  // Heartbeat: update lastActiveAt setiap 10 detik agar monitor tahu siswa masih aktif
+    const updateTimer = () => {
+      const remaining = Math.max(0, Math.floor((endTime - Date.now()) / 1000));
+      setTimeLeft(remaining);
+      if (remaining <= 0) {
+        clearInterval(timerRef.current);
+        autoSubmit(attempt?.id);
+      }
+    };
+
+    updateTimer();
+    timerRef.current = setInterval(updateTimer, 1000);
+    return () => clearInterval(timerRef.current);
+  }, [loading, isBlocked, exam?.id, attempt?.id]);
+
+  // Heartbeat Effect (updates monitor every 120 seconds to save writes)
   useEffect(() => {
     if (!attempt?.id || loading || isBlocked) return;
     const heartbeat = setInterval(async () => {
       try {
+        const currentAnswered = Object.keys(answersRef.current).filter(k => answersRef.current[k]?.answer).length;
         await updateDoc(doc(db, "studentAttempts", attempt.id), {
           lastActiveAt: serverTimestamp(),
+          answeredCount: currentAnswered,
           updatedAt: serverTimestamp()
         });
       } catch (e) { /* silent */ }
-    }, 10000);
-    // Send initial heartbeat immediately
+    }, 120000); // 120 seconds interval
+
+    // Initial heartbeat
+    const initialAnswered = Object.keys(answersRef.current).filter(k => answersRef.current[k]?.answer).length;
     updateDoc(doc(db, "studentAttempts", attempt.id), {
       lastActiveAt: serverTimestamp(),
+      answeredCount: initialAnswered,
       updatedAt: serverTimestamp()
-    }).catch(() => {});
+    }).catch(() => { });
+
     return () => clearInterval(heartbeat);
   }, [attempt?.id, loading, isBlocked]);
 
@@ -162,45 +242,30 @@ export default function KerjakanUjianPage() {
     return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
   };
 
-  // Autosave answer
-  const saveAnswer = useCallback(async (questionId, value) => {
+  // Save answer to localStorage (0 writes to Firestore)
+  const saveAnswer = useCallback((questionId, value) => {
     if (!attempt?.id || !exam?.id) return;
     setAutoSaveStatus("Menyimpan...");
-    const q = questions.find(q => q.id === questionId);
-    const isEssay = q?.questionType === "essay";
-    const answerData = {
-      attemptId: attempt.id, examId: exam.id, questionId,
-      selectedOptionId: isEssay ? null : value,
-      essayAnswer: isEssay ? value : null,
-      isCorrect: isEssay ? null : (q?.correctAnswer === value),
-      score: isEssay ? 0 : (q?.correctAnswer === value ? (q?.scoreWeight || 0) : 0),
-      updatedAt: serverTimestamp()
-    };
     try {
-      if (answers[questionId]?.docId) {
-        await updateDoc(doc(db, "studentAnswers", answers[questionId].docId), answerData);
-      } else {
-        answerData.createdAt = serverTimestamp();
-        const ref = await addDoc(collection(db, "studentAnswers"), answerData);
-        setAnswers(prev => ({ ...prev, [questionId]: { ...prev[questionId], docId: ref.id } }));
-      }
-      // Update lastActiveAt & answeredCount di attempt agar monitor bisa track progress real-time
-      const currentAnswered = Object.keys(answers).filter(k => answers[k]?.answer).length + (answers[questionId]?.answer ? 0 : 1);
-      await updateDoc(doc(db, "studentAttempts", attempt.id), {
-        lastActiveAt: serverTimestamp(),
-        answeredCount: currentAnswered,
-        updatedAt: serverTimestamp()
-      });
+      const answersKey = `exam_answers_${attempt.id}`;
+      const existing = JSON.parse(localStorage.getItem(answersKey) || "{}");
+      existing[questionId] = value;
+      localStorage.setItem(answersKey, JSON.stringify(existing));
+      
+      // Update local state
+      setAnswers(prev => ({
+        ...prev,
+        [questionId]: { answer: value }
+      }));
       setAutoSaveStatus("Tersimpan ✓");
       setTimeout(() => setAutoSaveStatus(""), 2000);
     } catch (e) {
       console.error(e);
       setAutoSaveStatus("Gagal simpan!");
     }
-  }, [attempt, exam, questions, answers]);
+  }, [attempt?.id, exam?.id]);
 
   const handleAnswer = (questionId, value) => {
-    setAnswers(prev => ({ ...prev, [questionId]: { ...prev[questionId], answer: value } }));
     saveAnswer(questionId, value);
   };
 
@@ -208,13 +273,47 @@ export default function KerjakanUjianPage() {
     if (!attemptId) return;
     isSubmittingRef.current = true;
     try {
-      const aSnap = await getDocs(query(collection(db, "studentAnswers"), where("attemptId", "==", attemptId)));
+      // Calculate score on the client side
+      const flatAnswers = {};
       let total = 0;
-      aSnap.forEach(d => { total += d.data().score || 0; });
-      await updateDoc(doc(db, "studentAttempts", attemptId), { status: "time_expired", score: total, submittedAt: serverTimestamp(), updatedAt: serverTimestamp() });
-      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      questions.forEach(q => {
+        const studentAnsObj = answersRef.current[q.id];
+        const studentAnsValue = studentAnsObj ? studentAnsObj.answer : "";
+        flatAnswers[q.id] = studentAnsValue;
+        if (q.questionType !== "essay") {
+          if (q.correctAnswer === studentAnsValue) {
+            total += (q.scoreWeight || 0);
+          }
+        }
+      });
+
+      // Get violations from localStorage
+      const violationsKey = `exam_violations_${attemptId}`;
+      const violations = JSON.parse(localStorage.getItem(violationsKey) || "[]");
+
+      await updateDoc(doc(db, "studentAttempts", attemptId), {
+        status: "time_expired",
+        score: total,
+        answers: flatAnswers,
+        violations: violations,
+        violationCount: violations.length,
+        submittedAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      // Clear localStorage
+      localStorage.removeItem(`exam_answers_${attemptId}`);
+      localStorage.removeItem(`exam_violations_${attemptId}`);
+      if (exam?.id) {
+        localStorage.removeItem(`exam_end_time_${exam.id}`);
+      }
+
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => { });
       router.replace(`/ujian/${slug}/hasil`);
-    } catch (e) { console.error(e); isSubmittingRef.current = false; }
+    } catch (e) {
+      console.error(e);
+      isSubmittingRef.current = false;
+    }
   };
 
   const handleSubmit = async () => {
@@ -222,23 +321,69 @@ export default function KerjakanUjianPage() {
     setIsSubmitting(true);
     isSubmittingRef.current = true;
     try {
-      const aSnap = await getDocs(query(collection(db, "studentAnswers"), where("attemptId", "==", attempt.id)));
+      // Calculate score on the client side
+      const flatAnswers = {};
       let total = 0;
-      aSnap.forEach(d => { total += d.data().score || 0; });
-      await updateDoc(doc(db, "studentAttempts", attempt.id), { status: "submitted", score: total, submittedAt: serverTimestamp(), updatedAt: serverTimestamp() });
-      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      questions.forEach(q => {
+        const studentAnsObj = answersRef.current[q.id];
+        const studentAnsValue = studentAnsObj ? studentAnsObj.answer : "";
+        flatAnswers[q.id] = studentAnsValue;
+        if (q.questionType !== "essay") {
+          if (q.correctAnswer === studentAnsValue) {
+            total += (q.scoreWeight || 0);
+          }
+        }
+      });
+
+      // Get violations from localStorage
+      const violationsKey = `exam_violations_${attempt.id}`;
+      const violations = JSON.parse(localStorage.getItem(violationsKey) || "[]");
+
+      await updateDoc(doc(db, "studentAttempts", attempt.id), {
+        status: "submitted",
+        score: total,
+        answers: flatAnswers,
+        violations: violations,
+        violationCount: violations.length,
+        submittedAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      // Clear localStorage
+      localStorage.removeItem(`exam_answers_${attempt.id}`);
+      localStorage.removeItem(`exam_violations_${attempt.id}`);
+      if (exam?.id) {
+        localStorage.removeItem(`exam_end_time_${exam.id}`);
+      }
+
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => { });
       router.replace(`/ujian/${slug}/hasil`);
-    } catch (e) { console.error(e); setIsSubmitting(false); isSubmittingRef.current = false; }
+    } catch (e) {
+      console.error(e);
+      setIsSubmitting(false);
+      isSubmittingRef.current = false;
+    }
   };
 
   const handleUnlock = async () => {
     setIsLocked(false);
     setLockReason("");
     if (attempt?.id) {
-      await updateDoc(doc(db, "studentAttempts", attempt.id), { status: "in_progress", updatedAt: serverTimestamp() });
-      await addDoc(collection(db, "examActivityLogs"), { attemptId: attempt.id, examId: exam?.id, activityType: "pin_correct", description: "PIN benar, ujian dilanjutkan", createdAt: serverTimestamp() });
+      await updateDoc(doc(db, "studentAttempts", attempt.id), {
+        status: "in_progress",
+        updatedAt: serverTimestamp()
+      });
+      // Save unlock event to localStorage instead of Firestore addDoc
+      const violationsKey = `exam_violations_${attempt.id}`;
+      const existing = JSON.parse(localStorage.getItem(violationsKey) || "[]");
+      existing.push({
+        type: "pin_correct",
+        reason: "PIN benar, ujian dilanjutkan",
+        timestamp: Date.now()
+      });
+      localStorage.setItem(violationsKey, JSON.stringify(existing));
     }
-    try { await document.documentElement.requestFullscreen(); } catch (e) {}
+    try { await document.documentElement.requestFullscreen(); } catch (e) { }
   };
 
   const handleBlocked = async () => {
@@ -297,12 +442,11 @@ export default function KerjakanUjianPage() {
             <div className="p-4 grid grid-cols-5 gap-2">
               {questions.map((q, i) => (
                 <button key={q.id} onClick={() => { setCurrentIndex(i); setShowNav(false); }}
-                  className={`w-10 h-10 rounded-lg text-sm font-bold transition-all ${
-                    i === currentIndex ? "bg-indigo-600 text-white ring-2 ring-indigo-300" :
-                    answers[q.id]?.answer ? "bg-green-100 text-green-800 border border-green-300" :
-                    flagged[q.id] ? "bg-yellow-100 text-yellow-800 border border-yellow-300" :
-                    "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                  }`}>{i + 1}</button>
+                  className={`w-10 h-10 rounded-lg text-sm font-bold transition-all ${i === currentIndex ? "bg-indigo-600 text-white ring-2 ring-indigo-300" :
+                      answers[q.id]?.answer ? "bg-green-100 text-green-800 border border-green-300" :
+                        flagged[q.id] ? "bg-yellow-100 text-yellow-800 border border-yellow-300" :
+                          "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                    }`}>{i + 1}</button>
               ))}
             </div>
             <div className="p-4 border-t border-gray-100 mt-auto space-y-2 text-xs text-gray-500">
@@ -335,15 +479,13 @@ export default function KerjakanUjianPage() {
                 <div className="space-y-3">
                   {currentQ.options.map((opt, i) => (
                     <button key={i} onClick={() => handleAnswer(currentQ.id, opt)}
-                      className={`w-full text-left p-4 rounded-xl border-2 transition-all ${
-                        answers[currentQ.id]?.answer === opt
+                      className={`w-full text-left p-4 rounded-xl border-2 transition-all ${answers[currentQ.id]?.answer === opt
                           ? "border-indigo-500 bg-indigo-50 ring-1 ring-indigo-300"
                           : "border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50"
-                      }`}>
+                        }`}>
                       <div className="flex items-center">
-                        <span className={`w-8 h-8 flex items-center justify-center rounded-full mr-3 text-sm font-bold ${
-                          answers[currentQ.id]?.answer === opt ? "bg-indigo-600 text-white" : "bg-gray-100 text-gray-600"
-                        }`}>{String.fromCharCode(65 + i)}</span>
+                        <span className={`w-8 h-8 flex items-center justify-center rounded-full mr-3 text-sm font-bold ${answers[currentQ.id]?.answer === opt ? "bg-indigo-600 text-white" : "bg-gray-100 text-gray-600"
+                          }`}>{String.fromCharCode(65 + i)}</span>
                         <span className="text-gray-800">{opt}</span>
                       </div>
                     </button>
@@ -356,11 +498,10 @@ export default function KerjakanUjianPage() {
                 <div className="grid grid-cols-2 gap-4">
                   {["true", "false"].map(val => (
                     <button key={val} onClick={() => handleAnswer(currentQ.id, val)}
-                      className={`p-6 rounded-xl border-2 text-center font-bold text-lg transition-all ${
-                        answers[currentQ.id]?.answer === val
+                      className={`p-6 rounded-xl border-2 text-center font-bold text-lg transition-all ${answers[currentQ.id]?.answer === val
                           ? "border-indigo-500 bg-indigo-50 ring-1 ring-indigo-300 text-indigo-700"
                           : "border-gray-200 bg-white hover:border-gray-300 text-gray-700"
-                      }`}>{val === "true" ? "Benar" : "Salah"}</button>
+                        }`}>{val === "true" ? "Benar" : "Salah"}</button>
                   ))}
                 </div>
               )}
