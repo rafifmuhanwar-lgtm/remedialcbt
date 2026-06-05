@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 
 export function useAntiCheat(exam, attempt, isLocked, onLock) {
-  const [wakeLock, setWakeLock] = useState(null);
+  const wakeLockRef = useRef(null);
   const resizeTimer = useRef(null);
   const blurRecorded = useRef(false);
   const isLockedRef = useRef(isLocked);
@@ -9,7 +9,7 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
   // Keep ref in sync with state
   useEffect(() => { isLockedRef.current = isLocked; }, [isLocked]);
 
-  const logActivity = useCallback((type, desc) => {
+  const logActivity = useCallback((type, desc, isViolation = false) => {
     if (!attempt?.id || !exam?.id) return;
     try {
       const storageKey = `exam_violations_${attempt.id}`;
@@ -17,7 +17,8 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
       existing.push({
         type,
         reason: desc,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        isViolation
       });
       localStorage.setItem(storageKey, JSON.stringify(existing));
     } catch (e) {
@@ -27,7 +28,7 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
 
   const handleViolation = useCallback(async (reason, type) => {
     if (isLockedRef.current) return;
-    await logActivity(type, reason);
+    await logActivity(type, reason, true);
     onLock(reason);
   }, [logActivity, onLock]);
 
@@ -41,7 +42,7 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
       if (exam.antiSleepEnabled && 'wakeLock' in navigator) {
         try {
           const lock = await navigator.wakeLock.request('screen');
-          setWakeLock(lock);
+          wakeLockRef.current = lock;
           logActivity('wake_lock_enabled', 'Wake Lock berhasil diaktifkan');
         } catch (err) {
           console.error(`${err.name}, ${err.message}`);
@@ -362,8 +363,8 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
       clearInterval(focusPollInterval);
       clearInterval(devtoolsInterval);
 
-      if (wakeLock !== null && wakeLock.release) {
-        wakeLock.release().then(() => logActivity('wake_lock_released', 'Wake Lock dilepas'));
+      if (wakeLockRef.current !== null && wakeLockRef.current.release) {
+        wakeLockRef.current.release().then(() => logActivity('wake_lock_released', 'Wake Lock dilepas'));
       }
 
       // Restore intercepted APIs
@@ -380,5 +381,5 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
     };
   }, [exam, attempt, isLocked, logActivity, handleViolation]);
 
-  return { wakeLock };
+  return { wakeLock: wakeLockRef.current };
 }

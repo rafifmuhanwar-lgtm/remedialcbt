@@ -78,7 +78,18 @@ export default function DashboardPage() {
             if ((a.score || 0) >= kkm) passed++;
             else failed++;
           }
-          if (a.violationCount) violations += a.violationCount;
+          
+          let aViolationCount = 0;
+          if (a.violations && Array.isArray(a.violations)) {
+            aViolationCount = a.violations.filter(v => 
+              v.isViolation || 
+              (v.type && !['wake_lock_enabled', 'wake_lock_released', 'wake_lock_not_supported', 'shortcut_blocked'].includes(v.type))
+            ).length;
+          } else if (a.violationCount) {
+            aViolationCount = a.violationCount;
+          }
+          violations += aViolationCount;
+
           if (a.status === "blocked") blocked++;
         });
 

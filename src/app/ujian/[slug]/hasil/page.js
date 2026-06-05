@@ -135,12 +135,20 @@ export default function HasilUjianPage() {
                         "Sedang Berjalan"}
               </span>
             </div>
-            {attempt.violationCount > 0 && (
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-500">Pelanggaran</span>
-                <span className="font-medium text-orange-600">{attempt.violationCount} kali</span>
-              </div>
-            )}
+            {(() => {
+              const count = attempt.violations && Array.isArray(attempt.violations)
+                ? attempt.violations.filter(v => 
+                    v.isViolation || 
+                    (v.type && !['wake_lock_enabled', 'wake_lock_released', 'wake_lock_not_supported', 'shortcut_blocked'].includes(v.type))
+                  ).length
+                : attempt.violationCount || 0;
+              return count > 0 ? (
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">Pelanggaran</span>
+                  <span className="font-medium text-orange-600">{count} kali</span>
+                </div>
+              ) : null;
+            })()}
           </div>
 
           <div className="bg-gray-50 rounded-lg p-4 text-center text-sm text-gray-500 border border-gray-100">

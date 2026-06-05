@@ -118,6 +118,16 @@ export default function MonitorPage() {
     }
   };
 
+  const getViolationCount = (attempt) => {
+    if (attempt.violations && Array.isArray(attempt.violations)) {
+      return attempt.violations.filter(v => 
+        v.isViolation || 
+        (v.type && !['wake_lock_enabled', 'wake_lock_released', 'wake_lock_not_supported', 'shortcut_blocked'].includes(v.type))
+      ).length;
+    }
+    return attempt.violationCount || 0;
+  };
+
   const getStatusDisplay = (attempt) => {
     if (attempt.status === 'submitted') {
       return { text: 'Selesai', color: 'bg-emerald-100 text-emerald-700', dot: 'bg-emerald-500' };
@@ -243,10 +253,10 @@ export default function MonitorPage() {
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          {attempt.violationCount > 0 ? (
+                          {getViolationCount(attempt) > 0 ? (
                             <div className="flex items-center text-red-600">
                               <AlertTriangle className="w-4 h-4 mr-1" />
-                              <span className="font-medium">{attempt.violationCount} kali</span>
+                              <span className="font-medium">{getViolationCount(attempt)} kali</span>
                             </div>
                           ) : (
                             <span className="text-gray-400">-</span>

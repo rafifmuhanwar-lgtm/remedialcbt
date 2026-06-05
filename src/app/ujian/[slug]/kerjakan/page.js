@@ -38,12 +38,12 @@ export default function KerjakanUjianPage() {
   }, [answers]);
 
   // Anti-cheat hook
-  useAntiCheat(exam, attempt, isLocked, (reason) => {
+  const handleLock = useCallback((reason) => {
     if (isBlocked || isSubmittingRef.current) return;
     
     const violationsKey = `exam_violations_${attempt?.id}`;
     const violations = JSON.parse(localStorage.getItem(violationsKey) || "[]");
-    const newCount = violations.length;
+    const newCount = violations.filter(v => v.isViolation).length;
 
     setViolationCount(newCount);
     setLockReason(reason);
@@ -59,7 +59,9 @@ export default function KerjakanUjianPage() {
         violations: violations
       }).catch(err => console.error("Error updating lockout:", err));
     }
-  });
+  }, [attempt?.id, exam?.maxViolations, isBlocked]);
+
+  useAntiCheat(exam, attempt, isLocked, handleLock);
 
   // Load exam data, attempt, and questions
   useEffect(() => {
@@ -159,7 +161,7 @@ export default function KerjakanUjianPage() {
           }
         }
         localStorage.setItem(violationsKey, JSON.stringify(currentViolations));
-        setViolationCount(currentViolations.length);
+        setViolationCount(currentViolations.filter(v => v.isViolation).length);
 
         // Calculate remaining time using localStorage endTime (Rule A)
         const endTimeKey = `exam_end_time_${examData.id}`;
@@ -296,7 +298,7 @@ export default function KerjakanUjianPage() {
         score: total,
         answers: flatAnswers,
         violations: violations,
-        violationCount: violations.length,
+        violationCount: violations.filter(v => v.isViolation).length,
         submittedAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
@@ -344,7 +346,7 @@ export default function KerjakanUjianPage() {
         score: total,
         answers: flatAnswers,
         violations: violations,
-        violationCount: violations.length,
+        violationCount: violations.filter(v => v.isViolation).length,
         submittedAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });

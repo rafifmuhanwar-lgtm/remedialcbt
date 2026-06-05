@@ -94,6 +94,20 @@ export default function ResultsPage() {
     }
   };
 
+  const getViolationCount = (attempt) => {
+    if (attempt.violations && Array.isArray(attempt.violations)) {
+      return attempt.violations.filter(v => 
+        v.isViolation || 
+        (v.type && !['wake_lock_enabled', 'wake_lock_released', 'wake_lock_not_supported', 'shortcut_blocked'].includes(v.type))
+      ).length;
+    }
+    return attempt.violationCount || 0;
+  };
+
+  const printDetailedPDF = (attempt) => {
+    window.open(`/cetak-hasil?id=${attempt.id}`, "_blank");
+  };
+
   // ====== EXPORT FUNCTIONS ======
   const getSelectedExam = () => exams.find(e => e.id === selectedExamId);
 
@@ -110,7 +124,7 @@ export default function ResultsPage() {
           a.status === "blocked" ? "Diblokir" :
             a.status === "locked" ? "Terkunci" : "Berjalan",
       "Keterangan": (a.score || 0) >= (exam?.minimumScore || 75) ? "LULUS" : "BELUM LULUS",
-      "Pelanggaran": a.violationCount || 0,
+      "Pelanggaran": getViolationCount(a),
     }));
   };
 
@@ -257,14 +271,17 @@ export default function ResultsPage() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center">
-                          {attempt.violationCount > 0 ? (
-                            <><AlertTriangle className="w-4 h-4 text-orange-500 mr-1" /> <span className="text-orange-600 font-medium">{attempt.violationCount} kali</span></>
+                          {getViolationCount(attempt) > 0 ? (
+                            <><AlertTriangle className="w-4 h-4 text-orange-500 mr-1" /> <span className="text-orange-600 font-medium">{getViolationCount(attempt)} kali</span></>
                           ) : (
                             <span className="text-gray-400">-</span>
                           )}
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                        <button onClick={() => printDetailedPDF(attempt)} className="text-blue-600 hover:text-blue-900 border border-blue-200 rounded px-2 py-1 bg-blue-50" title="Cetak PDF Detail">
+                          <Download className="w-4 h-4" />
+                        </button>
                         {attempt.status === 'blocked' && (
                           <button onClick={() => unblockAttempt(attempt.id)} className="text-indigo-600 hover:text-indigo-900 border border-indigo-200 rounded px-2 py-1 bg-indigo-50" title="Buka Blokir">
                             <Unlock className="w-4 h-4" />
