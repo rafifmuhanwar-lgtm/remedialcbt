@@ -121,7 +121,7 @@ function PrintContent() {
         {/* Header */}
         <div className="text-center border-b-4 border-double border-slate-300 pb-5 mb-8">
           <h1 className="text-2xl font-black text-slate-900 tracking-wide uppercase">Laporan Detail Hasil Ujian</h1>
-          <p className="text-xs text-slate-500 mt-1 uppercase font-semibold tracking-wider">Aplikasi Remedial CBT · Laporan Penilaian Mandiri</p>
+          <p className="text-xs text-slate-500 mt-1 uppercase font-semibold tracking-wider">Web Remedial CBT · Laporan Penilaian</p>
         </div>
 
         {/* Info Grid */}
@@ -266,11 +266,10 @@ function PrintContent() {
             <div className="text-[10px] text-slate-500">Absen: {attempt.studentNumber || "-"}</div>
           </div>
           <div className="text-center w-[250px]">
-            <div>Madiun, {new Date().toLocaleDateString("id-ID", { dateStyle: "long" })}</div>
-            <div>Guru Mata Pelajaran / Pengawas,</div>
+            <div>Bekasi, {new Date().toLocaleDateString("id-ID", { dateStyle: "long" })}</div>
             <div className="h-16"></div>
-            <div className="font-bold underline uppercase">{exam.teacherName || "____________________"}</div>
-            <div className="text-[10px] text-slate-500">NIP. ___________________________</div>
+            <div className="font-bold underline uppercase">Pengawas</div>
+            <div className="text-[10px] text-slate-500">Mahasiswa UBSI Cibitung</div>
           </div>
         </div>
 
