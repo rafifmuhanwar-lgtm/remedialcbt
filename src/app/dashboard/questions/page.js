@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { collection, query, where, getDocs, addDoc, deleteDoc, doc, serverTimestamp } from "firebase/firestore";
+import { collection, query, where, getDocs, addDoc, deleteDoc, doc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
-import { Plus, Trash2, Check, BookOpen, AlertCircle, Save } from "lucide-react";
+import { Plus, Trash2, Check, BookOpen, AlertCircle, Save, Pencil, X } from "lucide-react";
 
 export default function QuestionsPage() {
   const { user } = useAuth();
@@ -15,14 +15,17 @@ export default function QuestionsPage() {
   const [loadingExams, setLoadingExams] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
 
-  // Form states
+  // Form states for adding new questions
   const [questionType, setQuestionType] = useState("multiple_choice");
   const [questionText, setQuestionText] = useState("");
   const [scoreWeight, setScoreWeight] = useState(10);
-  // For multiple choice
   const [options, setOptions] = useState([{ text: "", isCorrect: true }, { text: "", isCorrect: false }, { text: "", isCorrect: false }, { text: "", isCorrect: false }]);
-  // For true/false
   const [tfAnswer, setTfAnswer] = useState(true);
+
+  // Edit states
+  const [editingId, setEditingId] = useState(null);
+  const [editData, setEditData] = useState(null);
+  const [saving, setSaving] = useState(false);
   
   useEffect(() => {
     const fetchExams = async () => {
@@ -137,6 +140,223 @@ export default function QuestionsPage() {
       }
     }
   };
+
+  // --- Edit logic ---
+  const startEditing = (q) => {
+    setEditingId(q.id);
+    const editOptions = q.questionType === "multiple_choice" && q.options
+      ? q.options.map(optText => ({ text: optText, isCorrect: optText === q.correctAnswer }))
+      : [{ text: "", isCorrect: true }, { text: "", isCorrect: false }, { text: "", isCorrect: false }, { text: "", isCorrect: false }];
+    setEditData({
+      questionText: q.questionText || "",
+      questionType: q.questionType || "multiple_choice",
+      scoreWeight: q.scoreWeight ?? 10,
+      options: editOptions,
+      tfAnswer: q.correctAnswer === "true",
+    });
+  };
+
+  const cancelEditing = () => {
+    setEditingId(null);
+    setEditData(null);
+  };
+
+  const handleEditOptionChange = (index, value) => {
+    const newOpts = [...editData.options];
+    newOpts[index].text = value;
+    setEditData({ ...editData, options: newOpts });
+  };
+
+  const handleEditSetCorrectOption = (index) => {
+    const newOpts = editData.options.map((opt, i) => ({ ...opt, isCorrect: i === index }));
+    setEditData({ ...editData, options: newOpts });
+  };
+
+  const handleUpdateQuestion = async (e) => {
+    e.preventDefault();
+    if (!editData || !editingId) return;
+    setSaving(true);
+
+    let correctAnswer = "";
+    if (editData.questionType === "multiple_choice") {
+      const correctOpt = editData.options.find(o => o.isCorrect);
+      if (!correctOpt || !correctOpt.text) {
+        alert("Pilihan benar tidak boleh kosong!");
+        setSaving(false);
+        return;
+      }
+      correctAnswer = correctOpt.text;
+    } else if (editData.questionType === "true_false") {
+      correctAnswer = editData.tfAnswer.toString();
+    }
+
+    try {
+      const updatePayload = {
+        questionText: editData.questionText,
+        questionType: editData.questionType,
+        scoreWeight: Number(editData.scoreWeight),
+        correctAnswer: editData.questionType === "essay" ? null : correctAnswer,
+        options: editData.questionType === "multiple_choice" ? editData.options.map(o => o.text) : null,
+        updatedAt: serverTimestamp()
+      };
+      await updateDoc(doc(db, "questions", editingId), updatePayload);
+      setEditingId(null);
+      setEditData(null);
+      fetchQuestions(selectedExamId);
+    } catch (error) {
+      console.error(error);
+      alert("Gagal menyimpan perubahan");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // --- Render edit form for a question ---
+  const renderEditForm = (q) => (
+    <div key={q.id} className="bg-white rounded-xl shadow-sm border-2 border-indigo-400 p-5">
+      <form onSubmit={handleUpdateQuestion} className="space-y-4">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-bold text-indigo-700">Edit Soal</h3>
+          <button type="button" onClick={cancelEditing} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100 transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Tipe Soal</label>
+            <select
+              value={editData.questionType}
+              onChange={(e) => setEditData({ ...editData, questionType: e.target.value })}
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border"
+            >
+              <option value="multiple_choice">Pilihan Ganda</option>
+              <option value="true_false">Benar / Salah</option>
+              <option value="essay">Essay Singkat</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Bobot Nilai</label>
+            <input
+              type="number" min="0.01" step="0.01" required
+              value={editData.scoreWeight}
+              onChange={(e) => setEditData({ ...editData, scoreWeight: e.target.value })}
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700">Pertanyaan</label>
+          <textarea
+            required rows="3"
+            value={editData.questionText}
+            onChange={(e) => setEditData({ ...editData, questionText: e.target.value })}
+            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border"
+            placeholder="Tulis pertanyaan di sini..."
+          ></textarea>
+        </div>
+
+        {editData.questionType === "multiple_choice" && (
+          <div className="space-y-3">
+            <label className="block text-sm font-medium text-gray-700">Pilihan Jawaban (Pilih yang benar)</label>
+            {editData.options.map((opt, idx) => (
+              <div key={idx} className="flex items-center space-x-3">
+                <input
+                  type="radio"
+                  name="editCorrectOption"
+                  checked={opt.isCorrect}
+                  onChange={() => handleEditSetCorrectOption(idx)}
+                  className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300"
+                />
+                <input
+                  type="text"
+                  required
+                  value={opt.text}
+                  onChange={(e) => handleEditOptionChange(idx, e.target.value)}
+                  placeholder={`Opsi ${String.fromCharCode(65 + idx)}`}
+                  className={`flex-1 rounded-md shadow-sm sm:text-sm p-2 border ${opt.isCorrect ? 'border-green-500 ring-1 ring-green-500 bg-green-50' : 'border-gray-300 focus:border-indigo-500 focus:ring-indigo-500'}`}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {editData.questionType === "true_false" && (
+          <div className="space-y-3">
+            <label className="block text-sm font-medium text-gray-700">Kunci Jawaban</label>
+            <div className="flex items-center space-x-4">
+              <label className="inline-flex items-center">
+                <input type="radio" checked={editData.tfAnswer === true} onChange={() => setEditData({ ...editData, tfAnswer: true })} className="form-radio h-4 w-4 text-indigo-600" />
+                <span className="ml-2">Benar</span>
+              </label>
+              <label className="inline-flex items-center">
+                <input type="radio" checked={editData.tfAnswer === false} onChange={() => setEditData({ ...editData, tfAnswer: false })} className="form-radio h-4 w-4 text-indigo-600" />
+                <span className="ml-2">Salah</span>
+              </label>
+            </div>
+          </div>
+        )}
+
+        {editData.questionType === "essay" && (
+          <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 text-sm p-3 rounded-lg">
+            Jawaban essay tidak memiliki kunci otomatis. Anda harus menilainya secara manual di menu Hasil.
+          </div>
+        )}
+
+        <div className="flex justify-end space-x-3 pt-4 border-t border-gray-100">
+          <button type="button" onClick={cancelEditing} className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">Batal</button>
+          <button type="submit" disabled={saving} className="inline-flex justify-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50">
+            <Save className="w-4 h-4 mr-2" /> {saving ? "Menyimpan..." : "Simpan Perubahan"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+
+  // --- Render read-only question card ---
+  const renderQuestionCard = (q, idx) => (
+    <div key={q.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 hover:border-indigo-200 transition-colors">
+      <div className="flex justify-between items-start">
+        <div className="flex-1">
+          <div className="flex items-center space-x-2 mb-2">
+            <span className="bg-gray-100 text-gray-800 text-xs font-semibold px-2.5 py-0.5 rounded uppercase">
+              {q.questionType.replace('_', ' ')}
+            </span>
+            <span className="text-xs text-gray-500">Bobot: {q.scoreWeight}</span>
+          </div>
+          <p className="text-gray-900 font-medium">{idx + 1}. {q.questionText}</p>
+          
+          {q.questionType === 'multiple_choice' && q.options && (
+            <div className="mt-3 space-y-2 pl-4">
+              {q.options.map((opt, i) => (
+                <div key={i} className={`text-sm flex items-center ${opt === q.correctAnswer ? 'text-green-600 font-medium' : 'text-gray-600'}`}>
+                  <span className="w-6">{String.fromCharCode(65 + i)}.</span>
+                  {opt}
+                  {opt === q.correctAnswer && <Check className="w-4 h-4 ml-2 text-green-500" />}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {q.questionType === 'true_false' && (
+            <div className="mt-3 text-sm text-green-600 font-medium flex items-center">
+              <Check className="w-4 h-4 mr-2 text-green-500" />
+              Jawaban Benar: {q.correctAnswer === 'true' ? 'Benar' : 'Salah'}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center space-x-1 ml-4">
+          <button onClick={() => startEditing(q)} className="text-gray-400 hover:text-indigo-600 p-2 bg-gray-50 hover:bg-indigo-50 rounded-lg transition-colors" title="Edit soal">
+            <Pencil className="w-5 h-5" />
+          </button>
+          <button onClick={() => deleteQuestion(q.id)} className="text-gray-400 hover:text-red-600 p-2 bg-gray-50 hover:bg-red-50 rounded-lg transition-colors" title="Hapus soal">
+            <Trash2 className="w-5 h-5" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="space-y-6">
@@ -287,43 +507,11 @@ export default function QuestionsPage() {
             </div>
           ) : (
             <div className="space-y-4">
-              {questions.map((q, idx) => (
-                <div key={q.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 hover:border-indigo-200 transition-colors">
-                  <div className="flex justify-between items-start">
-                    <div className="flex-1">
-                      <div className="flex items-center space-x-2 mb-2">
-                        <span className="bg-gray-100 text-gray-800 text-xs font-semibold px-2.5 py-0.5 rounded uppercase">
-                          {q.questionType.replace('_', ' ')}
-                        </span>
-                        <span className="text-xs text-gray-500">Bobot: {q.scoreWeight}</span>
-                      </div>
-                      <p className="text-gray-900 font-medium">{idx + 1}. {q.questionText}</p>
-                      
-                      {q.questionType === 'multiple_choice' && q.options && (
-                        <div className="mt-3 space-y-2 pl-4">
-                          {q.options.map((opt, i) => (
-                            <div key={i} className={`text-sm flex items-center ${opt === q.correctAnswer ? 'text-green-600 font-medium' : 'text-gray-600'}`}>
-                              <span className="w-6">{String.fromCharCode(65 + i)}.</span>
-                              {opt}
-                              {opt === q.correctAnswer && <Check className="w-4 h-4 ml-2 text-green-500" />}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {q.questionType === 'true_false' && (
-                        <div className="mt-3 text-sm text-green-600 font-medium flex items-center">
-                          <Check className="w-4 h-4 mr-2 text-green-500" />
-                          Jawaban Benar: {q.correctAnswer === 'true' ? 'Benar' : 'Salah'}
-                        </div>
-                      )}
-                    </div>
-                    <button onClick={() => deleteQuestion(q.id)} className="text-gray-400 hover:text-red-600 p-2 ml-4 bg-gray-50 hover:bg-red-50 rounded-lg transition-colors">
-                      <Trash2 className="w-5 h-5" />
-                    </button>
-                  </div>
-                </div>
-              ))}
+              {questions.map((q, idx) =>
+                editingId === q.id && editData
+                  ? renderEditForm(q)
+                  : renderQuestionCard(q, idx)
+              )}
             </div>
           )}
         </>
