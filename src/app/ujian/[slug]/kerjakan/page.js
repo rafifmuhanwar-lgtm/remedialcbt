@@ -179,8 +179,12 @@ export default function KerjakanUjianPage() {
 
         if (remaining <= 0) { await autoSubmit(attemptData.id); return; }
 
-        // Request fullscreen
-        try { await document.documentElement.requestFullscreen(); } catch (e) { console.warn("Fullscreen denied"); }
+        // Request fullscreen (safely, since iOS doesn't support documentElement.requestFullscreen)
+        try { 
+          if (document.documentElement.requestFullscreen) {
+            await document.documentElement.requestFullscreen(); 
+          }
+        } catch (e) { console.warn("Fullscreen denied"); }
 
       } catch (err) {
         console.error(err);
@@ -385,7 +389,11 @@ export default function KerjakanUjianPage() {
       });
       localStorage.setItem(violationsKey, JSON.stringify(existing));
     }
-    try { await document.documentElement.requestFullscreen(); } catch (e) { }
+    try { 
+      if (document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen(); 
+      }
+    } catch (e) { }
   };
 
   const handleBlocked = async () => {

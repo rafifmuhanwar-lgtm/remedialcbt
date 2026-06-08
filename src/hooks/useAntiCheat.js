@@ -1,6 +1,12 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 
 export function useAntiCheat(exam, attempt, isLocked, onLock) {
+  // Detect iOS/iPadOS (iPadOS reports as Macintosh with touch)
+  const isIOS = typeof navigator !== 'undefined' && (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1)
+  );
+
   const wakeLockRef = useRef(null);
   const resizeTimer = useRef(null);
   const blurRecorded = useRef(false);
@@ -116,8 +122,8 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
         activeEl.tagName === 'SELECT'
       );
 
-      if (isInputFocused) {
-        // Keyboard muncul — beri toleransi 500ms, tapi TETAP cek
+      if (isInputFocused || isIOS) {
+        // Keyboard/address bar/notif — beri toleransi, tapi TETAP cek
         // Gunakan timer TERPISAH dari resize timer
         blurRecorded.current = false;
         setTimeout(() => {
@@ -129,7 +135,7 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
               "browser_blur"
             );
           }
-        }, 500);
+        }, isIOS ? 2000 : 500);
       } else {
         // Bukan input — LANGSUNG violation, tidak ada toleransi
         // Ini akan menangkap floating ball app seperti QuestionAI
@@ -153,7 +159,7 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
     // 5. FULLSCREEN EXIT
     // ================================================================
     const handleFullscreenChange = () => {
-      if (!document.fullscreenElement) {
+      if (!document.fullscreenElement && !isIOS) {
         handleViolation("Terdeteksi keluar dari layar penuh (Fullscreen).", "fullscreen_exited");
       }
     };
@@ -164,6 +170,14 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
     //    Timer TERPISAH dari blur (fix bug timer conflict)
     // ================================================================
     const handleResize = () => {
+      // iOS: skip resize when keyboard is active (causes viewport shrink)
+      if (isIOS) {
+        const activeEl = document.activeElement;
+        if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT')) {
+          return;
+        }
+      }
+
       const currentWidth = window.innerWidth;
       const currentHeight = window.innerHeight;
       const screenWidth = window.screen.width;
@@ -172,7 +186,10 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
       const heightRatio = currentHeight / screenHeight;
 
       if (exam.splitScreenDetectionEnabled || exam.floatingWindowDetectionEnabled) {
-        if (widthRatio < 0.8 || heightRatio < 0.6) {
+        // iOS: lenient thresholds due to address bar, safe area insets
+        const wThreshold = isIOS ? 0.65 : 0.8;
+        const hThreshold = isIOS ? 0.4 : 0.6;
+        if (widthRatio < wThreshold || heightRatio < hThreshold) {
           if (resizeTimer.current) clearTimeout(resizeTimer.current);
           resizeTimer.current = setTimeout(() => {
             handleViolation(
@@ -252,8 +269,10 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
     // 9. AGGRESSIVE FOCUS POLLING — Deteksi floating app overlay
     //    Floating apps (QuestionAI ball) bisa aktif TANPA menyebabkan
     //    blur event. Polling hasFocus() setiap 1 detik.
+    //    iOS: hasFocus() tidak reliable — return false saat address bar,
+    //    keyboard, notif. iOS sudah dilindungi visibilitychange.
     // ================================================================
-    const focusPollInterval = setInterval(() => {
+    const focusPollInterval = isIOS ? null : setInterval(() => {
       if (isLockedRef.current) return;
 
       // Jika browser tidak punya fokus DAN halaman tidak hidden
@@ -283,8 +302,10 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
 
     // ================================================================
     // 11. DEVTOOLS DETECTION — Monitor window size gap
+    //     iOS: outerWidth/innerWidth gap besar secara normal (toolbar, safe area)
+    //     Skip di iOS untuk menghindari false positive
     // ================================================================
-    const devtoolsInterval = setInterval(() => {
+    const devtoolsInterval = isIOS ? null : setInterval(() => {
       if (isLockedRef.current) return;
       const widthDiff = window.outerWidth - window.innerWidth;
       const heightDiff = window.outerHeight - window.innerHeight;
@@ -360,8 +381,8 @@ export function useAntiCheat(exam, attempt, isLocked, onLock) {
       document.removeEventListener("touchstart", handleTouchStart);
 
       if (resizeTimer.current) clearTimeout(resizeTimer.current);
-      clearInterval(focusPollInterval);
-      clearInterval(devtoolsInterval);
+      if (focusPollInterval) clearInterval(focusPollInterval);
+      if (devtoolsInterval) clearInterval(devtoolsInterval);
 
       if (wakeLockRef.current !== null && wakeLockRef.current.release) {
         wakeLockRef.current.release().then(() => logActivity('wake_lock_released', 'Wake Lock dilepas'));
