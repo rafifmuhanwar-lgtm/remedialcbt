@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { doc, getDoc, collection, query, where, getDocs, updateDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, collection, query, where, getDocs, updateDoc, serverTimestamp, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAntiCheat } from "@/hooks/useAntiCheat";
 import { LockScreen } from "@/components/exam/LockScreen";
@@ -241,6 +241,25 @@ export default function KerjakanUjianPage() {
 
     return () => clearInterval(heartbeat);
   }, [attempt?.id, loading, isBlocked]);
+
+  // Real-time listener for admin manual block/unblock
+  useEffect(() => {
+    if (!attempt?.id) return;
+    
+    const unsubscribe = onSnapshot(doc(db, "studentAttempts", attempt.id), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.status === "blocked") {
+          setIsBlocked(true);
+        } else if (data.status === "in_progress") {
+          setIsBlocked(false);
+          setIsLocked(false);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, [attempt?.id]);
 
   const formatTime = (s) => {
     const m = Math.floor(s / 60);
