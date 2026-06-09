@@ -5,7 +5,7 @@ import { collection, query, where, getDocs, updateDoc, doc, getDoc } from "fireb
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { useNotification } from "@/context/NotificationContext";
-import { AlertCircle, User, Clock, AlertTriangle, MonitorPlay, Activity, Unlock } from "lucide-react";
+import { AlertCircle, User, Clock, AlertTriangle, MonitorPlay, Activity, Unlock, Lock } from "lucide-react";
 
 export default function MonitorPage() {
   const { user, isAdmin } = useAuth();
@@ -114,6 +114,21 @@ export default function MonitorPage() {
       } catch (error) {
         console.error(error);
         addNotification("error", "Gagal", "Tidak dapat membuka blokir.");
+      }
+    }
+  };
+
+  const blockAttempt = async (attemptId) => {
+    if (confirm("Blokir peserta ini secara manual?")) {
+      try {
+        await updateDoc(doc(db, "studentAttempts", attemptId), { 
+          status: "blocked"
+        });
+        fetchAttempts(selectedExamId);
+        addNotification("success", "Berhasil", "Peserta telah diblokir.");
+      } catch (error) {
+        console.error(error);
+        addNotification("error", "Gagal", "Tidak dapat memblokir peserta.");
       }
     }
   };
@@ -263,6 +278,14 @@ export default function MonitorPage() {
                           )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                          {!['blocked', 'submitted', 'time_expired'].includes(attempt.status) && (
+                            <button 
+                              onClick={() => blockAttempt(attempt.id)} 
+                              className="inline-flex items-center px-3 py-1.5 border border-red-200 rounded-md text-red-700 bg-red-50 hover:bg-red-100 transition-colors"
+                            >
+                              <Lock className="w-4 h-4 mr-1.5" /> Blokir
+                            </button>
+                          )}
                           {attempt.status === 'blocked' && (
                             <button 
                               onClick={() => unblockAttempt(attempt.id)} 
